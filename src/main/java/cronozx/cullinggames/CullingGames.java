@@ -7,12 +7,9 @@ import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
-import com.velocitypowered.api.proxy.messages.ChannelIdentifier;
 import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
-import com.velocitypowered.api.scheduler.Scheduler;
 import io.github.cdimascio.dotenv.Dotenv;
-import io.github.cdimascio.dotenv.internal.DotenvReader;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.TextColor;
 import org.slf4j.Logger;
@@ -29,14 +26,12 @@ import java.util.concurrent.TimeUnit;
 public class CullingGames {
 
     public static final MinecraftChannelIdentifier IDENTIFIER = MinecraftChannelIdentifier.from("cullinggames:main");
-    private final Logger logger;
     private final ProxyServer server;
-    private JedisPool jedisPool;
+    private final JedisPool jedisPool;
 
     @Inject
     public CullingGames(ProxyServer server, Logger logger) {
         this.server = server;
-        this.logger = logger;
 
         Dotenv dotenv = Dotenv.load();
         String redisHost = dotenv.get("CULLING_REDIS_HOST");
