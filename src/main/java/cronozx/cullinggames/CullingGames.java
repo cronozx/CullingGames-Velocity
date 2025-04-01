@@ -19,7 +19,6 @@ import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
 import redis.clients.jedis.JedisPubSub;
 
-import java.net.InetSocketAddress;
 import java.time.LocalTime;
 import java.util.Optional;
 import java.util.UUID;
@@ -89,12 +88,14 @@ public class CullingGames {
                             }).delay(1, TimeUnit.MINUTES).schedule();
                         } else if (message.startsWith("gameCanceled:")) {
                             String playerUUID = message.split(":")[1];
-                            Player player = server.getPlayer(UUID.fromString(playerUUID)).get();
-                            InetSocketAddress hubSocketAddress = server.getServer("hub").get().getServerInfo().getAddress();
+                            Optional<Player> player = server.getPlayer(UUID.fromString(playerUUID));
+                            Optional<RegisteredServer> hubServer = server.getServer("hub");
 
-                            player.transferToHost(hubSocketAddress);
+                            if (player.isPresent() && hubServer.isPresent()) {
+                                player.get().createConnectionRequest(hubServer.get()).fireAndForget();
 
-                            player.sendMessage(Component.newline().content("Culling Games >> Not enough players to start."));
+                                player.get().sendMessage(Component.newline().content("Culling Games >> Not enough players to start."));
+                            }
                         } else if (message.startsWith("timeout:")) {
                             String playerUUID = message.split(":")[1];
                             Player player = server.getPlayer(UUID.fromString(playerUUID)).get();
