@@ -71,14 +71,14 @@ public class CullingGames {
                             } else {
                                 Optional<Player> optionalPlayer = server.getPlayer(UUID.fromString(playerUUID));
                                 if (optionalPlayer.isPresent()) {
-                                    optionalPlayer.get().sendMessage(Component.newline().content("Culling Games >> The queue is not currently open").color(TextColor.color(255, 0, 0)));
+                                    optionalPlayer.get().sendMessage(Component.newline().content("§4§lCulling Games §8§l>> §r§7The queue is not currently open"));
                                 } else {
                                     logger.warn("Attempted to send message to offline player: {}", playerUUID);
                                 }
                             }
                         } else if (message.equals("forceStart")) {
                             queueOpen = true;
-                            server.getAllServers().forEach(registeredServer -> registeredServer.sendMessage(Component.newline().content("Culling Games >> Culling Games event starting now do /queue to join.").color(TextColor.color(255, 0, 0))));
+                            server.getAllServers().forEach(registeredServer -> registeredServer.sendMessage(Component.newline().content("§4§lCulling Games §8§l>> §r§7A Culling Games event is starting now. Use /queue to join.")));
                             server.getScheduler().buildTask(CullingGames.this, () -> {
                                 logger.info("Force Start executed");
                                 queueOpen = false;
@@ -94,7 +94,7 @@ public class CullingGames {
                             if (player.isPresent() && hubServer.isPresent()) {
                                 player.get().createConnectionRequest(hubServer.get()).fireAndForget();
 
-                                player.get().sendMessage(Component.newline().content("Culling Games >> Not enough players to start."));
+                                player.get().sendMessage(Component.newline().content("§4§lCulling Games §8§l>> §r§7Not enough players to start."));
                             }
                         } else if (message.startsWith("timeout:")) {
                             String playerUUID = message.split(":")[1];
@@ -110,11 +110,11 @@ public class CullingGames {
         }).start();
 
         new Thread(() -> server.getScheduler().buildTask(CullingGames.this, () -> {
-            if (LocalTime.now().getMinute() == 0 && LocalTime.now().getSecond() == 0 && LocalTime.now().getHour() % 3 == 0) {
+            if (LocalTime.now().getMinute() == 0 && LocalTime.now().getSecond() == 0 && LocalTime.now().getHour() % 3 == 0 && playersInGame() <= 0) {
                 clearQueue();
                 this.queueOpen = true;
                 for (RegisteredServer registeredServer: server.getAllServers()) {
-                    registeredServer.sendMessage(Component.newline().content("Culling Games >> Culling Games event starting now do /queue to join.").color(TextColor.color(255, 0, 0)));
+                    registeredServer.sendMessage(Component.newline().content("§4§lCulling Games §8§l>> §r§7A Culling Games event is starting now. Use /queue to join."));
                     if (registeredServer.getServerInfo().getName().equals("CullingGames")) {
                         server.getScheduler().buildTask(this, () -> {
                             this.queueOpen = false;
@@ -198,6 +198,12 @@ public class CullingGames {
     public void removePlayerFromGames(Player player) {
         try (Jedis jedis = jedisPool.getResource()) {
             jedis.hdel("playerPoints", player.getUniqueId().toString());
+        }
+    }
+
+    public int playersInGame() {
+        try (Jedis jedis = jedisPool.getResource()) {
+            return jedis.hkeys("playerPoints").size();
         }
     }
 }
