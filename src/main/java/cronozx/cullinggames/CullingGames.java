@@ -12,7 +12,10 @@ import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
 import io.github.cdimascio.dotenv.Dotenv;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.TextColor;
+import net.kyori.adventure.text.TextComponent;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.event.HoverEvent;
+import net.kyori.adventure.text.event.HoverEventSource;
 import org.slf4j.Logger;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
@@ -20,6 +23,8 @@ import redis.clients.jedis.JedisPoolConfig;
 import redis.clients.jedis.JedisPubSub;
 
 import java.time.LocalTime;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -31,6 +36,8 @@ public class CullingGames {
     private final ProxyServer server;
     private final JedisPool jedisPool;
     private boolean queueOpen = false;
+    private boolean isRunning = true;
+    private final Thread redisSubscriberThread;
 
     @Inject
     public CullingGames(ProxyServer server, Logger logger) {
@@ -43,78 +50,130 @@ public class CullingGames {
 
         this.jedisPool = new JedisPool(new JedisPoolConfig(), redisHost, redisPort, 2000, redisPassword);
 
-        new Thread(() -> {
-            try (Jedis jedis = jedisPool.getResource()) {
-                jedis.subscribe(new JedisPubSub() {
-                    @Override
-                    public void onMessage(String channel, String message) {
-                        if (message.startsWith("teleportTo:")) {
-                            String[] parts = message.split(":");
-
-                            if (parts.length < 3) {
-                                logger.warn("Invalid message format. Message: {}", message);
-                                return;
-                            }
-
-                            String serverName = parts[1];
-                            String playerName = parts[2];
-                            Optional<Player> player = server.getPlayer(playerName);
-                            Optional<RegisteredServer> targetServer = server.getServer(serverName);
-
-                            if (player.isPresent() && targetServer.isPresent()) {
-                                player.get().createConnectionRequest(targetServer.get()).fireAndForget();
-                            }
-                        } else if (message.startsWith("queue:")) {
-                            String playerUUID = message.split(":")[1];
-                            if (queueOpen) {
-                                queuePlayer(playerUUID);
-                            } else {
-                                Optional<Player> optionalPlayer = server.getPlayer(UUID.fromString(playerUUID));
-                                if (optionalPlayer.isPresent()) {
-                                    optionalPlayer.get().sendMessage(Component.newline().content("§4§lCulling Games §8§l>> §r§7The queue is not currently open"));
-                                } else {
-                                    logger.warn("Attempted to send message to offline player: {}", playerUUID);
+        redisSubscriberThread = new Thread(() -> {
+            while (isRunning) {
+                try (Jedis jedis = jedisPool.getResource()) {
+                    jedis.subscribe(new JedisPubSub() {
+                        @Override
+                        public void onMessage(String channel, String message) {
+                            try {
+                                if (message == null) {
+                                    return;
                                 }
+
+                                String messageType = message.contains(":") ?
+                                        message.substring(0, message.indexOf(':')) :
+                                        message;
+
+                                switch (messageType) {
+                                    case "teleportPlayersTo" -> {
+                                        String[] parts = message.split(":");
+
+                                        String serverName = parts[1];
+                                        List<String> playerNames = Arrays.stream(parts[2].split(","))
+                                                .map(name -> name.replace("[", "").replace("]", ""))
+                                                .toList();
+
+                                        Optional<RegisteredServer> registeredServer = server.getServer(serverName);
+
+                                        if (registeredServer.isPresent()) {
+                                            for (String playerName : playerNames) {
+                                                Optional<Player> player = server.getPlayer(playerName);
+
+                                                player.ifPresent(value -> value.createConnectionRequest(registeredServer.get()).fireAndForget());
+                                            }
+                                        }
+                                    }
+                                    case "teleportTo" -> {
+                                        String[] parts = message.split(":");
+                                        if (parts.length < 3) {
+                                            logger.warn("Invalid message format. Message: {}", message);
+                                            return;
+                                        }
+
+                                        String serverName = parts[1];
+                                        String playerName = parts[2];
+                                        Optional<Player> player = server.getPlayer(playerName);
+                                        Optional<RegisteredServer> targetServer = server.getServer(serverName);
+
+                                        if (player.isPresent() && targetServer.isPresent()) {
+                                            player.get().createConnectionRequest(targetServer.get()).fireAndForget();
+                                        }
+                                    }
+                                    case "queue" -> {
+                                        String playerUUID = message.split(":")[1];
+                                        if (queueOpen) {
+                                            queuePlayer(playerUUID);
+                                        } else {
+                                            Optional<Player> optionalPlayer = server.getPlayer(UUID.fromString(playerUUID));
+                                            if (optionalPlayer.isPresent()) {
+                                                optionalPlayer.get().sendMessage(Component.newline().content("§4§lCulling Games §8§l>> §r§7The queue is not currently open"));
+                                            } else {
+                                                logger.warn("Attempted to send message to offline player: {}", playerUUID);
+                                            }
+                                        }
+                                    }
+                                    case "forceStart" -> {
+                                        queueOpen = true;
+                                        server.getAllServers().forEach(registeredServer ->
+                                                registeredServer.sendMessage(Component.newline().content("§4§lCulling Games §8§l>> §r§7A Culling Games event is starting now. §f§nClick here§r to join.")
+                                                        .clickEvent(ClickEvent.runCommand("/cullinggames:queue"))));
+                                        server.getScheduler().buildTask(CullingGames.this, () -> {
+                                            logger.info("Force Start executed");
+                                            queueOpen = false;
+                                            String forceChannel = "cullinggames:bukkit";
+                                            String forceStartMsg = "start";
+                                            sendMessage(forceChannel, forceStartMsg);
+                                        }).delay(1, TimeUnit.MINUTES).schedule();
+                                    }
+                                    case "gameCanceled" -> {
+                                        String playerUUID = message.split(":")[1];
+                                        Optional<Player> player = server.getPlayer(UUID.fromString(playerUUID));
+                                        Optional<RegisteredServer> hubServer = server.getServer("hub");
+
+                                        if (player.isPresent() && hubServer.isPresent()) {
+                                            player.get().createConnectionRequest(hubServer.get()).fireAndForget();
+                                            player.get().sendMessage(Component.newline().content("§4§lCulling Games §8§l>> §r§7Not enough players to start."));
+                                        }
+                                    }
+                                    case "timeout" -> {
+                                        String playerUUID = message.split(":")[1];
+                                        Optional<Player> player = server.getPlayer(UUID.fromString(playerUUID));
+                                        player.ifPresent(value -> value.disconnect(Component.newline().content("Timed out")));
+                                    }
+                                    default -> logger.warn("Unknown message type: {}", message);
+                                }
+                            } catch (Exception e) {
+                                logger.error("Error processing Redis message: {}", e.getMessage(), e);
                             }
-                        } else if (message.equals("forceStart")) {
-                            queueOpen = true;
-                            server.getAllServers().forEach(registeredServer -> registeredServer.sendMessage(Component.newline().content("§4§lCulling Games §8§l>> §r§7A Culling Games event is starting now. Use /queue to join.")));
-                            server.getScheduler().buildTask(CullingGames.this, () -> {
-                                logger.info("Force Start executed");
-                                queueOpen = false;
-                                String forceChannel = "cullinggames:bukkit";
-                                String forceStartMsg = "start";
-                                sendMessage(forceChannel, forceStartMsg);
-                            }).delay(1, TimeUnit.MINUTES).schedule();
-                        } else if (message.startsWith("gameCanceled:")) {
-                            String playerUUID = message.split(":")[1];
-                            Optional<Player> player = server.getPlayer(UUID.fromString(playerUUID));
-                            Optional<RegisteredServer> hubServer = server.getServer("hub");
-
-                            if (player.isPresent() && hubServer.isPresent()) {
-                                player.get().createConnectionRequest(hubServer.get()).fireAndForget();
-
-                                player.get().sendMessage(Component.newline().content("§4§lCulling Games §8§l>> §r§7Not enough players to start."));
-                            }
-                        } else if (message.startsWith("timeout:")) {
-                            String playerUUID = message.split(":")[1];
-                            Player player = server.getPlayer(UUID.fromString(playerUUID)).get();
-
-                            player.disconnect(Component.newline().content("Timed out"));
                         }
+                    }, "cullinggames:velocity");
+                } catch (Exception e) {
+                    logger.error("Error subscribing to Redis channel: {}", e.getMessage());
+
+                    try {
+                        Thread.sleep(5000);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        isRunning = false;
                     }
-                }, "cullinggames:velocity");
-            } catch (Exception e) {
-                logger.error("Error subscribing to Redis channel: {}", e.getMessage());
+                }
             }
-        }).start();
+        });
+
+        redisSubscriberThread.setName("Redis-Subscriber");
+        redisSubscriberThread.setDaemon(true);
+        redisSubscriberThread.start();
 
         new Thread(() -> server.getScheduler().buildTask(CullingGames.this, () -> {
             if (LocalTime.now().getMinute() == 0 && LocalTime.now().getSecond() == 0 && LocalTime.now().getHour() % 3 == 0 && playersInGame() <= 0) {
                 clearQueue();
                 this.queueOpen = true;
+                TextComponent message = (Component.newline().content("§4§lCulling Games §8§l>> §r§7A Culling Games event is starting now. §f§nClick here§r to join.")
+                        .clickEvent(ClickEvent.runCommand("/cullinggames:queue")));
+                message.hoverEvent(HoverEvent.showText(Component.text("§fClick to join queue")));
                 for (RegisteredServer registeredServer: server.getAllServers()) {
-                    registeredServer.sendMessage(Component.newline().content("§4§lCulling Games §8§l>> §r§7A Culling Games event is starting now. Use /queue to join."));
+                    registeredServer.sendMessage(message);
                     if (registeredServer.getServerInfo().getName().equals("CullingGames")) {
                         server.getScheduler().buildTask(this, () -> {
                             this.queueOpen = false;
