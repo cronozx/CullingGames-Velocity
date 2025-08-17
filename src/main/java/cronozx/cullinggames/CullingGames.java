@@ -15,7 +15,6 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.TextComponent;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
-import net.kyori.adventure.text.event.HoverEventSource;
 import org.slf4j.Logger;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
@@ -29,7 +28,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
-@Plugin(id = "cullinggames", name = "cullinggames", version = BuildConstants.VERSION, authors = {"cronozx"})
+@Plugin(id = "cullinggames", name = "cullinggames", authors = {"cronozx"})
 public class CullingGames {
 
     public static final MinecraftChannelIdentifier IDENTIFIER = MinecraftChannelIdentifier.from("cullinggames:main");
@@ -73,7 +72,6 @@ public class CullingGames {
                                         List<String> playerNames = Arrays.stream(parts[2].split(","))
                                                 .map(name -> name.replace("[", "").replace("]", ""))
                                                 .toList();
-
                                         Optional<RegisteredServer> registeredServer = server.getServer(serverName);
 
                                         if (registeredServer.isPresent()) {
@@ -104,6 +102,7 @@ public class CullingGames {
                                         String playerUUID = message.split(":")[1];
                                         if (queueOpen) {
                                             queuePlayer(playerUUID);
+                                            sendMessage("cullinggames:bukkit", "confirmQueue:" + playerUUID);
                                         } else {
                                             Optional<Player> optionalPlayer = server.getPlayer(UUID.fromString(playerUUID));
                                             if (optionalPlayer.isPresent()) {
@@ -116,8 +115,13 @@ public class CullingGames {
                                     case "forceStart" -> {
                                         queueOpen = true;
                                         server.getAllServers().forEach(registeredServer ->
-                                                registeredServer.sendMessage(Component.newline().content("§4§lCulling Games §8§l>> §r§7A Culling Games event is starting now. §f§nClick here§r to join.")
-                                                        .clickEvent(ClickEvent.runCommand("/cullinggames:queue"))));
+                                            registeredServer.sendMessage(Component.newline().content("§4§lCulling Games §8§l>> §r§7A Culling Games event is starting now. ").append(
+                                                Component.text("§f§nClick here§r")
+                                                .hoverEvent(HoverEvent.showText(Component.text("§fClick to join queue")))
+                                                .clickEvent(ClickEvent.runCommand("/cullinggames:queue")).asComponent())
+                                                .append(Component.text(" to join.")).asComponent())
+                                        );
+
                                         server.getScheduler().buildTask(CullingGames.this, () -> {
                                             logger.info("Force Start executed");
                                             queueOpen = false;
@@ -127,13 +131,19 @@ public class CullingGames {
                                         }).delay(1, TimeUnit.MINUTES).schedule();
                                     }
                                     case "gameCanceled" -> {
-                                        String playerUUID = message.split(":")[1];
-                                        Optional<Player> player = server.getPlayer(UUID.fromString(playerUUID));
                                         Optional<RegisteredServer> hubServer = server.getServer("hub");
+                                        Optional<RegisteredServer> cullingServer = server.getServer("CullingGames");
 
-                                        if (player.isPresent() && hubServer.isPresent()) {
-                                            player.get().createConnectionRequest(hubServer.get()).fireAndForget();
-                                            player.get().sendMessage(Component.newline().content("§4§lCulling Games §8§l>> §r§7Not enough players to start."));
+                                        if (hubServer.isPresent() && cullingServer.isPresent()) {
+                                            for (Player player: cullingServer.get().getPlayersConnected()) {
+                                                player.createConnectionRequest(hubServer.get()).fireAndForget();
+                                                player.sendMessage(Component.newline().content("§4§lCulling Games §8§l>> §r§7Not enough players to start."));
+                                            }
+                                        }
+                                    }
+                                    case "gameCanceledEarly" -> {
+                                        for (RegisteredServer registeredServer: server.getAllServers()) {
+                                            registeredServer.sendMessage(Component.newline().content("§4§lCulling Games §8§l>> §r§7Not enough players to start."));
                                         }
                                     }
                                     case "timeout" -> {
@@ -169,9 +179,11 @@ public class CullingGames {
             if (LocalTime.now().getMinute() == 0 && LocalTime.now().getSecond() == 0 && LocalTime.now().getHour() % 3 == 0 && playersInGame() <= 0) {
                 clearQueue();
                 this.queueOpen = true;
-                TextComponent message = (Component.newline().content("§4§lCulling Games §8§l>> §r§7A Culling Games event is starting now. §f§nClick here§r to join.")
-                        .clickEvent(ClickEvent.runCommand("/cullinggames:queue")));
-                message.hoverEvent(HoverEvent.showText(Component.text("§fClick to join queue")));
+                TextComponent message = Component.newline().content("§4§lCulling Games §8§l>> §r§7A Culling Games event is starting now. ").append(
+                Component.text("§f§nClick here§r")
+                .hoverEvent(HoverEvent.showText(Component.text("§fClick to join queue§r")))
+                .clickEvent(ClickEvent.runCommand("/cullinggames:queue")).asComponent()).append(Component.text(" to join.")).asComponent();
+
                 for (RegisteredServer registeredServer: server.getAllServers()) {
                     registeredServer.sendMessage(message);
                     if (registeredServer.getServerInfo().getName().equals("CullingGames")) {
