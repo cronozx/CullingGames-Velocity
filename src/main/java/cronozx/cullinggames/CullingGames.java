@@ -1,31 +1,40 @@
 package cronozx.cullinggames;
 
 import com.google.inject.Inject;
+import com.velocitypowered.api.command.CommandManager;
+import com.velocitypowered.api.command.CommandMeta;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
 import com.velocitypowered.api.plugin.Plugin;
+import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
+import cronozx.cullinggames.commands.ReloadCommand;
 import io.github.cdimascio.dotenv.Dotenv;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.TextComponent;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
 import org.slf4j.Logger;
+import org.spongepowered.configurate.CommentedConfigurationNode;
+import org.spongepowered.configurate.ConfigurateException;
+import org.spongepowered.configurate.serialize.SerializationException;
+import org.spongepowered.configurate.yaml.YamlConfigurationLoader;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
 import redis.clients.jedis.JedisPubSub;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalTime;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Optional;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
 
 @Plugin(id = "cullinggames", name = "cullinggames", authors = {"cronozx"})
@@ -37,15 +46,43 @@ public class CullingGames {
     private boolean queueOpen = false;
     private boolean isRunning = true;
     private final Thread redisSubscriberThread;
+    private static final List<String> servers = new ArrayList<>();
+    private static CommentedConfigurationNode node;
 
     @Inject
-    public CullingGames(ProxyServer server, Logger logger) {
+    public CullingGames(ProxyServer server, Logger logger, @DataDirectory Path dataPath) {
         this.server = server;
 
         Dotenv dotenv = Dotenv.load();
         String redisHost = dotenv.get("CULLING_REDIS_HOST");
         int redisPort = Integer.parseInt(dotenv.get("CULLING_REDIS_PORT"));
         String redisPassword = dotenv.get("CULLING_REDIS_PASSWORD");
+
+        if (Files.notExists(dataPath)) {
+            try {
+                Files.createDirectory(dataPath);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        Path configPath = dataPath.resolve("config.yml");
+        if (Files.notExists(configPath)) {
+            try (InputStream stream = getClass().getClassLoader().getResourceAsStream("config.yml")) {
+                Files.copy(stream, configPath);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        final YamlConfigurationLoader loader = YamlConfigurationLoader.builder().path(configPath).build();
+        try {
+            node = loader.load();
+        } catch (ConfigurateException e) {
+            throw new RuntimeException(e);
+        }
+
+        getWhitelistServers(logger);
 
         this.jedisPool = new JedisPool(new JedisPoolConfig(), redisHost, redisPort, 2000, redisPassword);
 
@@ -114,12 +151,16 @@ public class CullingGames {
                                     }
                                     case "forceStart" -> {
                                         queueOpen = true;
-                                        server.getAllServers().forEach(registeredServer ->
-                                            registeredServer.sendMessage(Component.newline().content("§4§lCulling Games §8§l>> §r§7A Culling Games event is starting now. ").append(
-                                                Component.text("§f§nClick here§r")
-                                                .hoverEvent(HoverEvent.showText(Component.text("§fClick to join queue")))
-                                                .clickEvent(ClickEvent.runCommand("/cullinggames:queue")).asComponent())
-                                                .append(Component.text(" to join.")).asComponent())
+                                        server.getAllServers().forEach(registeredServer -> {
+                                                    System.out.println(registeredServer.getServerInfo().getName());
+                                                    if (servers.contains(registeredServer.getServerInfo().getName())) {
+                                                        registeredServer.sendMessage(Component.newline().content("§4§lCulling Games §8§l>> §r§7A Culling Games event is starting now. ").append(
+                                                                        Component.text("§f§nClick here§r")
+                                                                                .hoverEvent(HoverEvent.showText(Component.text("§fClick to join queue")))
+                                                                                .clickEvent(ClickEvent.runCommand("/cullinggames:queue")).asComponent())
+                                                                .append(Component.text(" to join.")).asComponent());
+                                                    }
+                                            }
                                         );
 
                                         server.getScheduler().buildTask(CullingGames.this, () -> {
@@ -180,19 +221,21 @@ public class CullingGames {
                 clearQueue();
                 this.queueOpen = true;
                 TextComponent message = Component.newline().content("§4§lCulling Games §8§l>> §r§7A Culling Games event is starting now. ").append(
-                Component.text("§f§nClick here§r")
-                .hoverEvent(HoverEvent.showText(Component.text("§fClick to join queue§r")))
-                .clickEvent(ClickEvent.runCommand("/cullinggames:queue")).asComponent()).append(Component.text(" to join.")).asComponent();
+                        Component.text("§f§nClick here§r")
+                                .hoverEvent(HoverEvent.showText(Component.text("§fClick to join queue§r")))
+                                .clickEvent(ClickEvent.runCommand("/cullinggames:queue")).asComponent()).append(Component.text(" to join.")).asComponent();
 
-                for (RegisteredServer registeredServer: server.getAllServers()) {
-                    registeredServer.sendMessage(message);
-                    if (registeredServer.getServerInfo().getName().equals("CullingGames")) {
-                        server.getScheduler().buildTask(this, () -> {
-                            this.queueOpen = false;
-                            String channel = "cullinggames:bukkit";
-                            String startMsg = "start";
-                            sendMessage(channel, startMsg);
-                        }).delay(5, TimeUnit.MINUTES).schedule();
+                for (RegisteredServer registeredServer : server.getAllServers()) {
+                    if (servers.contains(registeredServer.getServerInfo().getName())) {
+                        registeredServer.sendMessage(message);
+                        if (registeredServer.getServerInfo().getName().equals("CullingGames")) {
+                            server.getScheduler().buildTask(this, () -> {
+                                this.queueOpen = false;
+                                String channel = "cullinggames:bukkit";
+                                String startMsg = "start";
+                                sendMessage(channel, startMsg);
+                            }).delay(5, TimeUnit.MINUTES).schedule();
+                        }
                     }
                 }
             }
@@ -214,6 +257,11 @@ public class CullingGames {
     @Subscribe
     public void onProxyInitialization(ProxyInitializeEvent event) {
         server.getChannelRegistrar().register(IDENTIFIER);
+
+        CommandManager commandManager = server.getCommandManager();
+        CommandMeta commandMeta = commandManager.metaBuilder("reload").plugin(this).aliases("cullingreload").build();
+
+        commandManager.register(commandMeta, new ReloadCommand());
     }
 
     @Subscribe
@@ -275,6 +323,17 @@ public class CullingGames {
     public int playersInGame() {
         try (Jedis jedis = jedisPool.getResource()) {
             return jedis.hkeys("playerPoints").size();
+        }
+    }
+
+    public static void getWhitelistServers(Logger logger) {
+        try {
+            List<String> configServers = node.node("Server-Whitelist").getList(String.class);
+            if (configServers != null) {
+                servers.addAll(configServers);
+            }
+        } catch (SerializationException e) {
+            logger.error("Failed to load server whitelist", e);
         }
     }
 }
