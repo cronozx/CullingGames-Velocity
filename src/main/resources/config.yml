@@ -1,3 +1,83 @@
-Server-Whitelist:
-  #add servers here
-  #dummy-server
+# =====================================================================
+#  BattleRoyale — PROXY (Velocity) config
+# =====================================================================
+
+# Which coordination backend to use. MUST match the game server's `network.backend`
+# — the two talk through the backend itself, so a mismatch means they simply never
+# see each other. Only the selected block below is used; the other is ignored.
+#
+#   redis  = native pub/sub and key expiry. The better choice where available.
+#   mysql  = for hosts that give you MySQL but not Redis. Same features, but
+#            messages are polled rather than pushed, so signals arrive up to one
+#            `poll-interval-ms` later. "mariadb" is accepted as an alias.
+backend: "redis"
+
+redis:
+  host: "127.0.0.1"
+  port: 6379
+  username: ""
+  password: ""
+  key-prefix: "cullinggames"   # MUST match the game server's key-prefix
+  timeout-ms: 2000
+  # Env overrides: BR_REDIS_HOST  BR_REDIS_PORT  BR_REDIS_USERNAME  BR_REDIS_PASSWORD
+
+mysql:
+  host: "127.0.0.1"
+  port: 3306
+  database: "cullinggames"
+  username: "root"
+  password: ""
+  use-ssl: false
+  # Tables the plugin creates and owns: <table-prefix>queue, _alive, _kills, _kv
+  # and _messages. The user needs CREATE on first run, then only DML.
+  table-prefix: "cullinggames_"
+  # The MySQL equivalent of redis.key-prefix: a COLUMN value, not part of the
+  # table names, so several networks can share one set of tables. MUST match the
+  # game server's. Blank = inherit redis.key-prefix above.
+  namespace: "cullinggames"
+  timeout-ms: 2000
+  # How often to check for new messages — the added latency on every signal.
+  # Lower = snappier and more queries; clamped to 50-5000.
+  poll-interval-ms: 250
+  # How long delivered messages are kept before the janitor trims them.
+  message-retention-seconds: 120
+  # Env overrides: BR_MYSQL_HOST  BR_MYSQL_PORT  BR_MYSQL_DATABASE
+  #                BR_MYSQL_USERNAME  BR_MYSQL_PASSWORD
+
+servers:
+  game-server: "cullinggames"  # backend running the BattleRoyale Bukkit plugin (the arena)
+  lobby-server: "lobby"        # where players go when eliminated / at round end / on cancel
+
+queue:
+  min-players: 5
+  max-players: 30
+  window-seconds: 120          # queue stays open this long after an event is announced
+
+announce:
+  servers: [ "lobby" ]         # servers that receive the clickable start broadcast; [] = all servers
+
+auto-start:
+  enabled: true
+  timezone: "UTC"              # IANA zone id, e.g. "America/New_York"
+  daily-times: [ "00:00", "03:00", "06:00", "09:00", "12:00", "15:00", "18:00", "21:00" ]
+  interval-minutes: 0          # >0 = start every N minutes INSTEAD of daily-times
+
+messages:
+  prefix: "<gradient:#f4c430:#ff8c00><bold>Battle Royale</bold></gradient> <dark_gray>»</dark_gray> "
+  queue-joined: "<prefix><gray>You joined the queue. <dark_gray>(<count>/<max>)</dark_gray></gray>"
+  queue-left: "<prefix><gray>You left the queue.</gray>"
+  queue-already: "<prefix><gray>You are already in the queue.</gray>"
+  queue-not-in: "<prefix><gray>You are not in the queue.</gray>"
+  queue-full: "<prefix><red>The queue is full.</red>"
+  queue-closed: "<prefix><red>The queue is not open right now.</red>"
+  event-starting: "<prefix><gray>A Battle Royale is starting! <click:run_command:/queue><hover:show_text:'<green>Click to join the queue</green>'><gold><underlined>Click here</underlined></gold></click> to join.</gray>"
+  not-enough-players: "<prefix><red>Not enough players to start.</red>"
+  round-cancelled: "<prefix><red>The Battle Royale was cancelled.</red>"
+  arrival-timeout: "<prefix><red>You did not join the game in time.</red>"
+  winner-broadcast: "<prefix><gold><bold><winner></bold> won the Battle Royale!</gold>"
+  forcestart-done: "<prefix><green>Battle Royale event opened.</green>"
+  forcestart-running: "<prefix><red>A game or queue window is already active.</red>"
+  stopped: "<prefix><yellow>Stop signal sent to the game server.</yellow>"
+  status: "<prefix><gray>State: <state> | Queue: <queue> | Alive: <alive> | Backend: <backend></gray>"
+  reloaded: "<prefix><green>Proxy configuration reloaded.</green>"
+  reload-failed: "<prefix><red>Reload failed; keeping the previous configuration. Check the console.</red>"
